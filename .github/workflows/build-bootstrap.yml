@@ -1,0 +1,70 @@
+name: Build bootstrap-aarch64.zip
+
+# Manual trigger only — this is a heavy, long-running job (1-4+ hours,
+# lots of disk space), so we don't want it firing on every push.
+on:
+  workflow_dispatch:
+    inputs:
+      architectures:
+        description: "Comma-separated architectures to build"
+        required: true
+        default: "aarch64"
+
+jobs:
+  build-bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      # -----------------------------------------------------------
+      # 1. Free up disk space. Default ubuntu-latest runners have
+      #    ~14-25GB free, tight against the 20-50GB this build wants
+      #    once package sources, build artifacts, and Docker layers
+      #    pile up. Strip preinstalled toolchains we don't need.
+      # -----------------------------------------------------------
+      - name: Free disk space
+        run: |
+          echo "Before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet \
+                      /usr/local/lib/android \
+                      /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL \
+                      /usr/local/share/boost \
+                      "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
+          sudo docker image prune -a -f || true
+          echo "After cleanup:"
+          df -h /
+
+      # -----------------------------------------------------------
+      # 2. Checkout this repo (already has TERMUX_APP_PACKAGE set
+      #    in scripts/properties.sh).
+      # -----------------------------------------------------------
+      - name: Checkout termux-packages
+        uses: actions/checkout@v4
+
+      - name: Confirm TERMUX_APP_PACKAGE
+        run: grep "^TERMUX_APP_PACKAGE=" scripts/properties.sh
+
+      # -----------------------------------------------------------
+      # 3. Build inside the project's own Docker build environment,
+      #    non-interactively (run-docker.sh takes a command to run
+      #    instead of dropping into an interactive shell).
+      # -----------------------------------------------------------
+      - name: Build bootstrap in Docker
+        run: |
+          ./scripts/run-docker.sh \
+            ./scripts/build-bootstraps.sh --architectures "${{ inputs.architectures }}"
+
+      # -----------------------------------------------------------
+      # 4. Collect and publish the output.
+      # -----------------------------------------------------------
+      - name: List built bootstrap archives
+        run: ls -la bootstrap-*.zip
+
+      - name: Upload bootstrap zip(s) as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-zips
+          path: bootstrap-*.zip
+          if-no-files-found: error
+          retention-days: 14
